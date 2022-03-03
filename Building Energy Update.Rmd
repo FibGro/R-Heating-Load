@@ -1,0 +1,1189 @@
+---
+title: "Heating Load Prediction"
+author: "Fibry Gro"
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output: 
+  rmdformats::downcute:
+    toc_depth: 3
+    toc_float: 
+        collapsed: True
+    highlight: kate
+    default_style: dark
+---
+
+# Introduction 
+
+```{r, echo=FALSE, fig.height=8}
+knitr::include_graphics("energy.png")
+#https://poetsandquants.com/2014/07/29/the-case-for-applying-to-one-school/
+```
+
+The project is part of the learning by building the regression model section. The main objective of this project is to implement the regression method that we have been learned in the class. The specific goal of the project is to predict the heating load of residential buildings based on the following characteristics of the building: Relative compactness, Surface Area, Wall Area, Roof Area, Height, Orientation, Glazing Area, and Glazing Area Distribution. The prediction of the heat load is important to ensure energy-saving and improve system operation efficiency. 
+
+# Data Set Information 
+
+The data was created by Angeliki Xifara (Civil/Structural Engineer) and was processed by Athanasios Tsanas (Oxford Centre for Industrial and Applied Mathematics, University of Oxford, UK). The data is collected from analysis utilizing 12 different building shapes simulated in Ecotect. The buildings differ concerning the compactness, the surface area, and the roof area, amongst other variables. The data set contains eight variables and two outcomes, denoted by Y1 and Y2. However, in this project, we only predict one outcome which is heating load (Y1). The link of data can be found in [here](https://archive.ics.uci.edu/ml/datasets/energy+efficiency).
+
+Description for each parameter: 
+
+- X1 Relative Compactness 
+- X2 Surface Area 
+- X3 Wall Area 
+- X4 Roof Area 
+- X5 Overall Height 
+- X6 Orientation 
+- X7 Glazing Area 
+- X8 Glazing Area Distribution 
+- Y1 Heating Load 
+- Y2 Cooling Load
+
+# Data Preparation
+
+## Attach Libraries
+
+Attach are all libraries used in this project. 
+
+```{r,warning=FALSE,message=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(tidyr)
+library(GGally)
+library(corrplot)
+library(hrbrthemes)
+library(wesanderson)
+library(MASS)
+library(car)
+library(lmtest)
+library(MLmetrics)
+library(performance)
+library(quantreg)
+library(caret)
+library(elasticnet)
+library(knitr)
+library(matrixStats)
+library(plotly)
+library(glue)
+
+```
+
+## Read Data Frame
+
+Read data and assigned as an object called energy. 
+
+```{r}
+energy <- read.csv("ENB2012_data.csv")
+```
+
+## Observe Data Frame
+
+Observe the data frame by using `glimpse()`.
+
+- There are 768 rows and 10 columns of data set. 
+- All columns data types are numeric. 
+
+```{r paged.print=FALSE}
+glimpse(energy)
+```
+
+## Change coloumn names
+
+The column names are a bit confusing. Let's change it to the original name. 
+
+```{r}
+energy<-
+  energy %>% 
+  rename(Compactness=X1,
+          Surface.Area =X2,
+          Wall.Area =X3,
+          Roof.Area = X4,
+          Height = X5,
+          Orientation = X6, 
+          Glazing.Area =X7,
+          Glazing.Dist =X8,
+          Heating.Load =Y1, 
+          Cooling.Load= Y2)
+```
+
+
+## Feature Selection
+
+Since we will only predict Heating.Load, we will remove column Cooling.Load
+
+```{r}
+energy <- energy %>% 
+  dplyr::select(-Cooling.Load)
+```
+
+## Check missing value
+
+Check missing value with `colSums()` and `is.na()`. There are no missing values in this data set.
+
+```{r}
+summary3 <- as.data.frame(colSums(is.na(energy)))
+rmarkdown::paged_table(summary3)
+```
+
+# Exploration Dataframe
+
+## Correlation 
+
+Check the correlation between target variable and predictor variables. 
+
+```{r}
+ggcorr(energy, label = T, label_size = 3, hjust = 1)
+```
+
+> Insight :
+>
+- Height, Compactness, Glazing.Area, Glazing.Dist and Wall.Area has a positive correlation with Heating.Load.
+- Roof.Area and Surface.Area has a negative correlation with Heating.Load. 
+- Surface.Area and Compactness, Height and Compactness have a significant positive correlation.
+- Significant negative correlation between Compactness and Roof.Area. 
+
+
+## Checking for outliers 
+
+We want to know if we are dealing with outliers or not. We'll create boxplot for all the variables in this dataset. 
+
+Form the dataset into longer direction by using `pivot_longer()` 
+
+```{r}
+energy.long <- pivot_longer(data = energy,
+             cols = c(Height, Compactness, Glazing.Area, Glazing.Dist, Wall.Area, Orientation, Surface.Area, Wall.Area, Roof.Area, Heating.Load ))
+
+```
+
+Create boxplot for all variables.
+
+```{r}
+energy.long %>% 
+ggplot(aes(x = value, fill=name)) +
+  geom_boxplot(color="black")+
+  facet_wrap(~name, scales = "free")+
+  theme_bw()+
+  scale_fill_manual(values = wes_palette(21, name = "Darjeeling1", type = "continuous"))+
+  labs(title="Boxplot For Each Variables",
+       y="",
+       x="Values")+
+      
+      theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")+
+    theme(strip.background =element_rect(fill="black"))+
+    theme(strip.text = element_text(colour = 'white'))
+```
+
+> Insight:
+>
+- No outliers are found in this dataset. 
+- The value of the target variable (heating load) distributes between 12 and 32, with a median approximately at 19. 
+- Orientation and Height have a normal distribution. Distribution of Compactness, Heating.Load and Wall.Area is right skew, while the other distributions are left skew. 
+
+# Linear Regression
+
+In this section, we create a linear model regression based on a different number of the predictor.
+
+- First part: We construct the linear model regression with the target variable is heating load and variable predictors are other variables. We name the model `model_energy_all`.
+- Second part: We construct the linear model regression with the target variable is heating load and variable predictors, which have a significant p-value as described in `model_energy_all`. We call the model `model_energy_few`.
+
+## First Part (All Variables)
+
+The multiple linear regression will be used to model the relationship between multiple scalar responses (predictor variables) and the target variable. We use the whole dataset regression to find the coefficient estimates of different factors. 
+
+- Create a model with target variable (Heating Load) and predictor variables of the other columns by using `lm()`
+- Assign as a new object called `model_energy_all`. 
+- Observe the `summary()`
+
+```{r}
+# Create a linear regression model 
+model_energy_all <- lm(Heating.Load~., energy)
+
+# Summary of the model
+summary(model_energy_all)
+```
+
+>Insight: 
+>
+- The adjusted R-squared is 0.9154, implying that all predictor variables can describe 91.54% target variable, the rest is explained by other variables that are not included in the model.
+- Compactness, Surface.Area, Wall.Area, height, Glazing.Area and Glazing.Dist has a significant p-value, meaning that those variables tend to have a strong correlation with the heating load.
+
+## Second Part (Few Variables)
+
+In this part, we will create multiple linear regression by using predictor variables, which have a significant p-value as described on the above insight. Then, assign it as a new object called `model_energy_few`. 
+
+```{r}
+# Create a linear regression model 
+model_energy_few <- lm(Heating.Load~Compactness+Surface.Area+Wall.Area+Height+Glazing.Area+Glazing.Dist, energy)
+
+# Summary of the model 
+summary(model_energy_few)
+```
+>Insight: 
+>
+- The adjusted R-squared is 0.9155, implying that all predictor variables can describe 91.55% target variable, the rest is explained by other variables that are not included in the model.
+- All variables in the model have a significant p-value. 
+
+
+## Model Evaluation
+
+Compare two models based on the R-squared and Error value. We will use Mean Absolute Error (MAE) because our dataset does not have outliers.
+
+```{r, echo=FALSE}
+
+sum <- list(
+  "Models" = c("All variables as predictor model", "Few variables as predictor model"), 
+  
+  "Adjusted R.Squared" = c(round(summary(model_energy_all)$adj.r.squared,4),
+                           round(summary(model_energy_few)$adj.r.squared,4)),
+  
+  "MAE" = c(MLmetrics::MAE(y_pred=model_energy_all$fitted.values, y_true=energy$Heating.Load), 
+            MLmetrics::MAE(y_pred=model_energy_few$fitted.values, y_true=energy$Heating.Load)))
+
+summary1<- as.data.frame(sum)
+rmarkdown::paged_table(summary1)
+
+```
+
+> Insight: Both models have relatively similar values of adjusted R squared and MAE. In this case, I would choose the model with few variables as predictors, since this model is simpler. 
+
+# Stepwise Regression 
+
+In this section, we would like to compare three methods of stepwise regression (backward, forward and both). Stepwise regression is the step-by-step iterative construction of a regression model that involves the selection of independent variables to be used in a final model. 
+
+## Backward Method
+
+Backward regression involves removing potential variables in succession and testing for statistical significance after each iteration until the lowest AIC is achieved. 
+
+```{r,warning=FALSE,message=FALSE}
+# Create backward model 
+model_energy_backward <- stepAIC(object=model_energy_all, 
+                          direction="backward", 
+                          trace = 0)
+
+# Summary of model 
+summary(model_energy_backward)
+```
+
+## Forward Method
+
+Forward regression involves adding potential variables in succession and testing for statistical significance after each iteration until the lowest AIC achieved. 
+
+```{r}
+# Create a model without the variable predictor
+model_energy_non <- lm(Heating.Load~1, energy)
+
+# Create forward model
+model_energy_forward <- stepAIC(object=model_energy_non, 
+                          direction="forward",
+                          scope=list(upper=model_energy_all,
+                                     lower=model_energy_non), trace=0)
+
+# Summary of model 
+summary(model_energy_forward)
+```
+
+## Both Method
+
+Both stepwise regression involves adding and removing potential variables in succession and testing for statistical significance after each iteration until the lowest AIC achieved.
+
+```{r message=FALSE, warning=FALSE}
+
+# Create a both method model 
+model_energy_both<- stepAIC(object=model_energy_non, 
+                          direction="both",
+                          scope=list(upper=model_energy_all,
+                                     lower=model_energy_non),trace=0)
+
+# Summary of model 
+summary(model_energy_both)
+```
+
+## Model Valuation 
+
+```{r}
+compare_performance(model_energy_backward, model_energy_forward, model_energy_both)
+```
+> Insight: 
+> 
+- All models shows similar result of adjusted R-squared value, AIC and RMSE. 
+- The adjusted R-squared value of 91.6% (quite high), implying that the variables predictor could explain the heating load variable as variable target. 
+- The RMSE value is 2.919. It is implies that the number is realtively small compare to heating ranges, which is between 0 and 45. 
+- Since the R-squared value is quite high and RMSE is relatively small, we can justify that the model is relatively good. In this case, we will use model_energy_backward as our model. However, we should test our model with a few linear model assumption. Let's move on. 
+
+## Model Interpretation 
+
+Model interpretation for model_energy_backward is : 
+
+**Heating.Load =**
+**-64.77 * Compactness - 0.089 * Surface.Area + 0.06 * Wall.Area + 4.17 * Height + 19.93 * Glazing.Area + 0.20 * Glazing.Dist**
+
+- One unit increase in compactness, reduces the heating load by 64.77 
+- One unit increase in surface area, reduces the heating load by 0.089
+- One unit increase in wall area, increases the heating load by 0.06
+- One unit increase in height, increases the heating load by 4.17
+- One unit increase in glazing area, increases the heating load by 19.93
+- One unit increase in glazing distribution, increases heating load by 0.20
+
+# Assumption 
+
+The following are assumptions of linear regression:
+
+- There must be a linear relation between target and predictor variables (linearity)
+- Absence of heteroscedasticity (Homoscedasticity)
+- Error terms should be normally distributed with mean 0 and constant variance (Normality of Residual)
+- Absence of multicollinearity and auto-correlation (Multicollinearity)
+
+## Linearity 
+
+Linearity assumption is that the correlation between variables predictor and variable target assumed to be linear. We will use `cor.test()` to check the p-value of all variable predictors in model_energy_backward. The p-value should less than alpha (p-value < 0.05), so that we will reject the $H_0$. Linearity hypothesis test: 
+
+$$
+H_0: correlation\ is\ not\ significant\\
+H_1: correlation\ significant
+$$
+
+```{r}
+cor.test(energy$Compactness, energy$Heating.Load)
+cor.test(energy$Surface.Area, energy$Heating.Load)
+cor.test(energy$Wall.Area, energy$Heating.Load)
+cor.test(energy$Height, energy$Heating.Load)
+cor.test(energy$Glazing.Area, energy$Heating.Load)
+cor.test(energy$Glazing.Dist, energy$Heating.Load)
+
+```
+
+> Insight : Since the p-value of all variables in the model backward is less than alpha(0.05), we can assume that there is a linear relationship between the predictors and the outcome variables.
+
+## Normality of Residual
+
+Residuals of the model should have a normal distribution and its values should be distributed within zero. To check this assumption, we could use visualization by using a histogram of residuals and a statistic test by using `Shapiro.test()`. The expectation is to have a p-value higher than alpha (p-value > 0.05) so that we can accept the $H_0$.  
+
+
+$$
+H_0: error\ is\ normally\ distributed\\
+H_1: error\ is\ not\ normally\ distributed\\
+$$
+
+```{r}
+shapiro.test(model_energy_backward$residuals)
+```
+
+> Insight: Since the p-value is lower than 0.05, we can assume that the residual in the model is not normally distributed. It implies that the model violates the residual normality assumption. 
+
+## Homoscedasticity of Residual
+
+Based on Investopedia, Homoskedastic (also spelt "homoscedastic") is a condition in which the variance of the residual, in a regression model, is constant. The error term does not vary much as the value of the predictor variable changes. To observe the homoscedasticity, we can use a scatter plot between model residuals and the model prediction and statistic test with Breusch-Pagan. The expectation from the test is to have a p-value higher than alpha (p-value > 0.05), so that we can accept the $H_0$. 
+
+$$
+H_0: Error\ variances\ is\ constant\ (Homoscedasticity)\\
+H_1: Error\ variance\ is\ not\ constant\ (Heteroscedasticity)
+$$
+```{r}
+plot(x = model_energy_backward$fitted.values, y = model_energy_backward$residuals)
+abline(h = 0, col = "red", lty = 2)
+```
+
+```{r}
+bptest(model_energy_backward)
+```
+
+> Insight: Since the p-value is less than 0.05, there is Heteroscedasticity in the residuals of the model. It implies that the model violates the homoscedasticity assumption. 
+
+## Multicolinearity
+
+Multicollinearity is the occurrence of a high relationship between two or more variables predictors in a multiple regression model. The linear regression technique assumes that multicollinearity should not appear in the dataset because it causes difficulty in ranking variables based on their importance. This behaviour can be observed by using VIF(Variance Inflation Factor) value. The expectation is to have a value less than 10 so that there is no multicollinearity in the model. 
+
+```{r}
+vif(model_energy_backward)
+```
+
+> Insight: Three values (Compactness, Surface.Area and Height) have VIF of more than 10. This also means that the model violates the multicolinearity assumption.  
+
+## Summary and Next Step 
+
+Based on the result, the model_energy_backward violates three of four assumptions for the linear regression model. In the next step, we will try to keep the linear model regression by handling three violations.
+
+# Handling The Violation 
+
+## Normality of Residual
+
+In this section, we will perform transformation for variable target of Heating.Load. The transformation includes log, z-score and square root. Stepwise backward regression method will be used to obtain a linear regression model. The expectation is to have p-value from `shapiro.test()` higher than alpha (0.05). 
+
+### Log transformation 
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans`.
+energy.trans <- energy
+
+# Create a new column of heating containing transformation log of heating load. 
+energy.trans$Heating <- log(energy.trans$Heating.Load)
+
+# Drop target variable
+energy.trans <- energy.trans %>% 
+  dplyr::select(-Heating.Load)
+
+# Create a model with all the variables
+model_log_all <- lm(Heating~., energy.trans)
+
+# Create model linear regression with backward method. 
+model_log_backward <- stepAIC(object=model_log_all,
+                           direction="backward",
+                           trace=0)
+
+# Summary of the model
+summary(model_log_backward)
+```
+
+### Z-score transformation
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans1`.
+energy.trans1 <- energy
+
+# Create a new column of heating containing transformation z-score of heating load. 
+energy.trans1$Heating <- scale(energy.trans1$Heating.Load)
+
+# Drop target variable
+energy.trans1 <- energy.trans1 %>% 
+  dplyr::select(-Heating.Load) 
+
+# Create model linear regression with all predictor. 
+model_scale_all <- lm(Heating~., energy.trans1)
+
+# Create model linear regression with backward method. 
+model_scale_backward <- stepAIC(object=model_scale_all,
+                           direction="backward",
+                           trace=0)
+
+# Summary of model 
+summary(model_scale_backward)
+```
+
+### Square Root
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans2`.
+energy.trans2 <- energy
+
+# Create a new column of heating containing transformation square root of heating load.
+energy.trans2$Heating <- sqrt(energy.trans2$Heating.Load)
+
+# Drop the target variable
+energy.trans2 <- energy.trans2 %>% 
+  dplyr::select(-Heating.Load) 
+
+# Create model linear regression with all predictor
+model_square_all <- lm(Heating~., energy.trans2)
+
+# Create model linear regression with backward method. 
+model_square_backward <- stepAIC(object=model_square_all,
+                           direction="backward",
+                           trace=0)
+# Summary of model 
+summary(model_square_backward)
+```
+
+### Summary 
+
+The summary of R-squared, RMSE and p-value of shapiro test based on different models. 
+
+```{r echo=FALSE}
+options(scipen=0)
+
+summary2 <- list(
+  
+'Model' = c("Backward", "Y : Trans Log", "Y : Trans Square-Root", "Y : Trans Z-Scores"),
+
+'Adj.R.squared' = c(round(summary(model_energy_backward)[[9]],4), round(summary(model_log_backward)[[9]],4), round(summary(model_square_backward)[[9]],4), round(summary(model_scale_backward)[[9]],4)),
+
+'RMSE' = c(MLmetrics::RMSE(y_pred = model_energy_backward$fitted.values, y_true = energy$Heating.Load),
+           MLmetrics::RMSE(y_pred = model_log_backward$fitted.values, y_true = energy.trans$Heating),
+           MLmetrics::RMSE(y_pred = model_square_backward$fitted.values, y_true = energy.trans2$Heating),
+           MLmetrics::RMSE(y_pred = model_scale_backward$fitted.values, y_true = energy.trans1$Heating)),
+
+'Shapiro.p.value' = c(shapiro.test(model_energy_backward$residuals)[[2]], shapiro.test(model_log_backward$residuals)[[2]], shapiro.test(model_square_backward$residuals)[[2]],  shapiro.test(model_scale_backward$residuals)[[2]]))
+
+summary2 <- as.data.frame(summary2)
+rmarkdown::paged_table(summary2)
+
+```
+> Insight: 
+>
+- Three models of transformation are not capable to improve the p-value in the Shapiro test. It implies that all models still violate the residual normality. 
+- With the transformation log on the variable target, the adjusted R-squared value increased from 91.55% to 93.63% and the RMSE decreased from 2.91 to 0.27 compare to the model without transformation (model backwards). 
+
+## Homoscedasticity
+
+We will perform a z-score transformation for all variable predictors. The stepwise backward regression method will be used to obtain a linear regression model. The expectation is to have a p-value from bptest() higher than alpha (0.05).  
+
+### Z-score transformation
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans3`.
+energy.trans3 <- energy
+
+# Create a new column of heating containing transformation z-score of heating load.
+energy.trans3 <- energy.trans3 %>% 
+  dplyr::select(-Heating.Load) 
+
+# Combine the columns
+energy.trans3 <- as.data.frame(cbind(scale(energy.trans3), Heating=energy$Heating.Load))
+
+# Create a linear regression with all predictors
+model_hete_all <- lm(Heating~., energy.trans3)
+
+# Create linear regression with backward method
+model_hete_backward <- stepAIC(object=model_hete_all,
+                           direction="backward",
+                           trace=0)
+
+# Summary model 
+summary(model_hete_backward)
+```
+
+```{r}
+bptest(model_hete_backward)
+```
+
+### Log transformation 
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans7`.
+energy.trans7 <- energy
+
+# Create a new column of heating containing transformation log of heating load.
+energy.trans7 <- energy.trans7 %>% 
+  dplyr::select(-Heating.Load) 
+
+# Log transformation to all predictor and drop the target
+energy.trans7<- energy.trans7 %>% 
+  mutate(log.compact =log(Compactness)) %>% 
+  mutate(log.surface=log(Surface.Area)) %>% 
+  mutate(log.wall=log(Wall.Area)) %>% 
+  mutate(log.height=log(Height)) %>% 
+  mutate(log.ori=log(Orientation)) %>% 
+  mutate(log.area=log(Glazing.Area+1)) %>% 
+  mutate(log.dist=log(Glazing.Dist+1)) %>% 
+  dplyr::select(-Compactness,-Surface.Area,-Wall.Area,-Height, -Orientation, -Glazing.Area, -Glazing.Dist)
+
+# Combine column 
+energy.trans7 <- as.data.frame(cbind(energy.trans7, Heating=energy$Heating.Load))
+
+# Create a linear regression model with all predictors
+model_all_trans <- lm(Heating~., energy.trans7)
+
+# Create a linear regression model with backward method
+model_backward_trans <- stepAIC(object=model_all_trans,
+                           direction="backward",
+                           trace=0)
+
+# Summary of model 
+summary(model_backward_trans)
+```
+
+
+```{r}
+
+bptest(model_backward_trans)
+```
+
+### Summary 
+
+The summary of R-squared, RMSE and shapiro.test p-value of different models. 
+
+```{r echo=FALSE}
+
+summary4 <- list(
+  
+'Model' = c("Backward","Y : Trans log", "X : Trans Z-Scores", "X : Trans log"),
+
+Adj.R.squared = c(round(summary(model_energy_backward)[[9]],4), 
+                    round(summary(model_log_backward)[[9]],4), 
+                    round(summary(model_hete_backward)[[9]],4), 
+                    round(summary(model_backward_trans)[[9]],4)),
+
+RMSE = c(MLmetrics::RMSE(y_pred = model_energy_backward$fitted.values, y_true = energy$Heating.Load),
+           MLmetrics::RMSE(y_pred = model_log_backward$fitted.values, y_true = energy.trans$Heating),
+           MLmetrics::RMSE(y_pred = model_hete_backward$fitted.values, y_true = energy.trans3$Heating),
+           MLmetrics::RMSE(y_pred = model_backward_trans$fitted.values, y_true = energy.trans7$Heating)),
+
+Shapiro.p.value = c(shapiro.test(model_energy_backward$residuals)[[2]], 
+                      shapiro.test(model_log_backward$residuals)[[2]], 
+                      shapiro.test(model_hete_backward$residuals)[[2]], 
+                      shapiro.test(model_backward_trans$residuals)[[2]]),
+
+bptest.p.value =c(bptest(model_energy_backward)[[4]],
+                    bptest(model_log_backward)[[4]],
+                    bptest(model_hete_backward)[[4]], 
+                    bptest(model_backward_trans)[[4]]))
+
+
+summary4<- as.data.frame(summary4)
+
+rmarkdown::paged_table(summary4)
+```
+> Insight: 
+>
+- The transformation in variable predictor could not improve the p-value in bptest, implying the model transformation still violate the homoscedasticity. 
+- The predictor log transformation improves the adjusted R-squared value and RMSE compared to the backward model. However, the transformation log in the target variable still shows the best model with the highest adjusted R-squared and the lowest error. 
+
+
+## Multicolinearity
+
+In this section, we will drop all variables that are identified as multicolinearity or having high correlation. The expectation is to have the VIF value less than 10. 
+
+```{r}
+# Copy data frame energy and assign as new dataframe called `energy.trans4`.
+energy.trans4 <- energy
+
+# Drop few predictors
+energy.trans4 <- energy.trans4 %>% 
+  dplyr::select(-Compactness, -Surface.Area, -Height) 
+
+# Create a linear regression model with all predictor
+model_multi_all <- lm(Heating.Load~., energy.trans4)
+
+# Create a linear regression model with backward
+model_multi_backward <- stepAIC(object=model_multi_all,
+                           direction="backward",
+                           trace=0)
+# Summary of model 
+summary(model_multi_backward)
+```
+
+
+```{r}
+vif(model_multi_backward)
+```
+
+> Insight: After dropping three variables, the vif value is less than 10. However, the p-value from the Shapiro test and bptest are still showing a violation of normality and homoscedasticity. Note: I have tried a log transformation in target by using only variables that vif value less than 10, however, the result are similar in that our model is not valid for error normality. 
+
+
+# Summary And Next Step
+
+- Transformation to variable target and variable predictors have been done to handle the normality of residuals, homoscedasticity and multicolienarity. However, the transformation only changes the violation in multicolinearity. It implies that the linear model regression is not an ‘appropriate’ method for predicting our target variable (heating load).
+- A linear models regression with all stepwise methods has a similar value of adjusted R-squared value and the lowest RMSE.
+- In the next section, we will try to find the most appropriate model to predict heating load by comparing a mean error and R square values.  
+
+
+# Model Comparison 
+
+In this section, we would like to compare different models (linear regression, ridge regression, decision tree, and random forest) to find the lowest RMSE value. The model is built by using function `train()` from library `caret`. 
+
+## Cross Validation 
+
+### Split Train-Test Data
+
+We split the dataset into train and test by using function `sample()`. The train dataset will contain 80% of the `energy` dataframe. Train data is used to train the model, while the rest is used to test the model.
+
+```{r, warning= FALSE}
+# Lock random samples 
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# Create train dataset with 80% of total row in dataframe and the rest is used to test the model. 
+insample <- sample(nrow(energy), nrow(energy)*0.8)
+
+# Create energy_train as our train data
+energy_train <- energy[insample,]
+
+# Create energy_test as our test data
+energy_test <- energy[-insample,]
+```
+
+### K-Fold Cross-Validation
+
+For all models, we use K-fold validation. The K-fold cross-validation splits the dataset into a K number of the fold, which each fold is used as a testing set at some point. To use K-fold, we need to specify the function `trainControl()` with `method="repeatedcv"`. The `number =5` means that there will be five folds or sets of split data.  We assign it as a new object called `control`.
+
+```{r, warning=FALSE}
+# Lock random samples 
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+control <- trainControl(method="repeatedcv", number=5, repeats=3) 
+```
+
+## Linear Regression 
+
+### Modelling
+
+We create a linear regression by using function `train()` with `method = lm`
+
+```{r, warning=FALSE}
+# Lock random samples 
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# Create model a linear regression with all predictors
+model_lr <- train(Heating.Load ~.,
+                     data = energy_train,
+                     method = "lm",
+                     trControl = control)
+
+# Summary of model
+model_lr
+```
+> Insight : 
+> 
+- The adjusted R-squared value of training data is 91.2%, implying that the variables predictor could explain 91.2% of the heating load as a variable target. 
+- The RMSE value in training data is 2.98. It is implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+### Prediction and Results
+
+```{r, warning=FALSE}
+# Prediction of model
+pred_lr <- predict(object=model_lr, newdata=energy_test)
+```
+
+```{r}
+# RMSE value of model prediction 
+rmse_lr <- MLmetrics::RMSE(y_pred=pred_lr, y_true=energy_test$Heating.Load)
+
+# R-square value of model prediction 
+R_lr <- R2_Score(y_pred = pred_lr, y_true = energy_test$Heating.Load)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Create Table
+options(digits = 3)
+compare1 <- data.frame(Name = c("RMSE",
+                                 "R-square value"),
+                       Values  = c(rmse_lr,
+                                R_lr))
+
+rmarkdown::paged_table(compare1)
+
+# Create Plot 
+a <- data.frame(actual = energy_test$Heating.Load,
+           predicted = pred_lr) %>%
+  ggplot(aes(actual,predicted, color=actual, text=glue("Actual : {round(actual,2)}\nPredicted : {round(predicted,2)}"))) +
+  geom_point(size=2, color="orange") +
+  geom_abline(intercept = 0, slope = 1) +
+  xlab("Actual") +
+  ylab("Predicted") +
+  ggtitle("Model Linear Regression Heating Load: Actual vs Predicted") +
+  #scale_fill_manual(values = wes_palette("Royal1"))+
+  theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")
+
+ggplotly(a, tooltip = "text")
+```
+> Insight : 
+> 
+- The adjusted R-squared value of test data is 92.90%, implying that the variables predictor could explain 92.90% of the heating load as a variable target. 
+- The RMSE value in test data is 2.78. It is implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+## Ridge Regression 
+
+[Ridge regression](https://en.wikipedia.org/wiki/Ridge_regression#:~:text=Ridge%20regression%20is%20a%20method,econometrics%2C%20chemistry%2C%20and%20engineering.) is a technique of estimating the coefficients of multiple-regression models where linearly predictors are most highly correlated. Since our variables suffer from multicolinearity, we can try to use this model. 
+
+### Modelling
+
+We create a ridge regression by using function `train()` with method `ridge`. 
+
+```{r, warning=FALSE}
+# Lock random samples 
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# Create model a linear regression
+model_rg <- train(Heating.Load ~.,
+                     data = energy_train,
+                     method = "ridge",
+                     trControl = control)
+
+# View of model 
+model_rg
+```
+> Insight : 
+> 
+- The lambda parameter controls the amount of regularization applied to the model. The best lambda, which defines the best model, is 0.0001. 
+- The adjusted R-squared value of training data is 91.2%, implying that the variables predictor could explain 91.2% of the heating load as a variable target. 
+- The RMSE value in training data is 2.98. It is implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+### Prediction and Results
+
+```{r, warning=FALSE}
+# Prediction of model
+pred_rg <- predict(object=model_rg, newdata=energy_test)
+```
+
+```{r}
+# RMSE value of model prediction 
+rmse_rg <- MLmetrics::RMSE(y_pred=pred_rg, y_true=energy_test$Heating.Load)
+
+# R-square value of model prediction 
+R_rg <- R2_Score(y_pred = pred_rg, y_true = energy_test$Heating.Load)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+# Create Table
+options(digits = 3)
+compare2 <- data.frame(Name = c("RMSE",
+                                 "R-square value"),
+                       Values  = c(rmse_rg,
+                                R_rg))
+
+rmarkdown::paged_table(compare2)
+
+# Create Plot 
+b <- data.frame(actual = energy_test$Heating.Load,
+           predicted = pred_rg) %>%
+  ggplot(aes(actual,predicted, color=actual, text=glue("Actual : {round(actual,2)}\nPredicted : {round(predicted,2)}"))) +
+  geom_point(size=2, color="orange") +
+  geom_abline(intercept = 0, slope = 1) +
+  xlab("Actual") +
+  ylab("Predicted") +
+  ggtitle("Model Ridge Regression Heating Load: Actual vs Predicted") +
+  #scale_fill_manual(values = wes_palette("Royal1"))+
+  theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")
+
+ggplotly(b, tooltip = "text")
+```
+> Insight : 
+> 
+- The adjusted R-squared value of test data is 92.90%, implying that the variables predictor could explain 92.90% of the heating load as a variable target. 
+- The RMSE value in test data is 2.78. It is implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+## Decision Tree
+
+[Decision tree](https://en.wikipedia.org/wiki/Decision_tree_learning) is the most popular machine learning algorithms due to its simplicity and intelligibility. Decision tree can be used to predict when the target variable is the class (discrete) or a real number (numeric).
+
+### Modelling 
+
+We create a decision tree by using function `train()` with `method=rpart`
+
+```{r, warning=FALSE}
+# Lock random samples 
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# Create model a linear regression
+model_dt <- train(Heating.Load ~.,
+                     data = energy_train,
+                     method = "rpart",
+                     trControl = control)
+
+# View of model 
+model_dt
+```
+> Insight : 
+> 
+- The complexity parameter (cp) controls is to control the size of the decision tree. If the value of cp is less than the cost of adding other variables to the tree, then the tree stops growing. The optimum cp, which provides the best model, is 0.0272. 
+- The adjusted R-squared value of training data is 88.40%, implying that the variables predictor could explain 88.40% of the heating load as a variable target. 
+- The RMSE value in training data is 3.39. It implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+
+### Prediction and Results
+
+```{r, warning=FALSE}
+# Prediction of model
+pred_dt <- predict(object=model_dt, newdata=energy_test)
+
+# RMSE value of model prediction 
+rmse_dt <- MLmetrics::RMSE(y_pred=pred_dt, y_true=energy_test$Heating.Load)
+
+# R-square value of model prediction 
+R_dt <- R2_Score(y_pred = pred_dt, y_true = energy_test$Heating.Load)
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+# Create Table
+options(digits = 3)
+compare3 <- data.frame(Name = c("RMSE",
+                                 "R-square value"),
+                       Values  = c(rmse_dt,
+                                R_dt))
+
+rmarkdown::paged_table(compare3)
+
+# Create Plot 
+c <- data.frame(actual = energy_test$Heating.Load,
+           predicted = pred_dt) %>%
+  ggplot(aes(actual,predicted, color=actual, text=glue("Actual : {round(actual,2)}\nPredicted : {round(predicted,2)}"))) +
+  geom_point(size=2, color="orange") +
+  geom_abline(intercept = 0, slope = 1) +
+  xlab("Actual") +
+  ylab("Predicted") +
+  ggtitle("Decision Tree Heating Load: Actual vs Predicted") +
+  #scale_fill_manual(values = wes_palette("Royal1"))+
+  theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")
+
+ggplotly(c, tooltip = "text")
+```
+
+> Insight : 
+> 
+- The adjusted R-squared value of test data is 88.20%, implying that the variables predictor could explain 88.20% of the heating load as a variable target. 
+- The RMSE value in test data is 3.590. It is implied that the number is relatively small compared to heating ranges, which is between 0 and 45. 
+
+## Random Forest
+
+[Random Forest](https://towardsdatascience.com/understanding-random-forest-58381e0602d2) consists of many decision trees that operate as an ensemble method. Each decision tree produces a prediction. The majority of the votes becomes the model prediction. The concept behind the random forest is bagging (bootstrap and aggregation) and feature randomness when constructing each decision tree to create an uncorrelated forest of the tree. 
+
+We create a decision tree by using function `train()` with `method=rf`. We save the model into RDS file. 
+
+```{r, warning=FALSE}
+set.seed(100, sample.kind = "Rounding")
+
+# Create a random forest model 
+#model_rf_energy <- train(Heating.Load ~ .,
+#                    method = "rf",
+#                   trControl = control)
+
+
+# Save the model into RDS file
+#saveRDS(model_rf_energy, "model_rf.RDS")
+```
+
+After running the model and saved it into `model_rf`, we can read the file by using function `readRDS()` and observe the model. 
+
+```{r}
+# Read the forest_origin and assign it as a new abject called `model_rf`
+model_rf <- readRDS("model_rf.RDS")
+
+# View the model 
+model_rf
+```
+
+> Insight : 
+>
+- Based on the output, the model with mtry = 20 has the lowest RMSE value when tested on data from bootstrap sampling. 
+- The adjusted R-squared value of training data is 99.70%, implying that the variables predictor could explain 99.70% the heating load  as a variable target. 
+- The RMSE value in training data is 0.53. It is implied that the number is very small compared to heating ranges, which is between 0 and 45. 
+
+### Prediction and Results
+
+The prediction can be generated by using function `predict()` with `energy_test` as our newdata. 
+
+```{r}
+# Model prediction 
+pred_rf <-predict(object=model_rf, newdata=energy_test)
+
+# RMSE of model prediction 
+rmse_rf <- MLmetrics::RMSE(y_pred = pred_rf, y_true=energy_test$Heating.Load)
+
+# R-square value of model prediction 
+R_rf <- R2_Score(y_pred = pred_rf, y_true = energy_test$Heating.Load)
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+# Create Table
+options(digits = 3)
+compare4 <- data.frame(Name = c("RMSE",
+                                 "R-square value"),
+                       Values  = c(rmse_rf,
+                                R_rf))
+
+rmarkdown::paged_table(compare4)
+
+# Create Plot 
+d <- data.frame(actual = energy_test$Heating.Load,
+           predicted = pred_rf) %>%
+  ggplot(aes(actual,predicted, color=actual, text=glue("Actual : {round(actual,2)}\nPredicted : {round(predicted,2)}"))) +
+  geom_point(size=2, color="orange") +
+  geom_abline(intercept = 0, slope = 1) +
+  xlab("Actual") +
+  ylab("Predicted") +
+  ggtitle("Random Forest Heating Load: Actual vs Predicted") +
+  #scale_fill_manual(values = wes_palette("Royal1"))+
+  theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")
+
+ggplotly(d, tooltip = "text")
+```
+
+> Insight : 
+> 
+- The adjusted R-squared value of test data is 99.70%, implying that the variables predictor could explain 99.70% the heating load  as a variable target. 
+- The RMSE value in test data is 0.547. It is implied that the number is very small compare to heating ranges, which is between 0 and 45. 
+
+
+## Comparison 
+
+```{r, echo =FALSE}
+
+options(digits = 3)
+compare <- data.frame(Model = c("Linear Regression",
+                                   "Ridge Regression",
+                                   "Decision Tree",
+                                   "Random Forest"),
+                         RMSE  = c(rmse_lr,
+                                  rmse_rg,
+                                  rmse_dt,
+                                  rmse_rf),
+                         R_square = c(R_lr,
+                                  R_rg,
+                                  R_dt,
+                                  R_rf))
+
+rmarkdown::paged_table(compare)
+```
+> Insight : The output table suggests that Random Forest is the most appropriate model to predict heating load in this database. The model itself produces the lowest mean error (RMSE) and the highest R square value. 
+
+# Bonus : Quantile Regression 
+
+## Introduction 
+
+[Quantile Regression Analysis](https://isdsnet.com/ijds-v4n5-1.pdf) is the extension of linear regression. The method is used when we are dealing with outliers, and an absence of homoscedasticity in the dataset. Linear regression estimates the conditional mean of the target variable for given variable predictors. Since the mean does not explain the whole distribution, modelling the mean does not justify the whole description of a correlation between target and predictor. In this case, we can use quantile regression to predict a percentile (quantile) for a given variable predictors. Thus, in this poject, we could find the relationship between heating load (target variable) with predictors that changes depending on which quantile we look at.
+
+Equation of quantile regression: 
+
+$$\hat{y} = e_i + \beta_q*xi$$
+
+where $\beta_q$ is the vector of unknown variables related with the quantile. 
+
+## Perform Modelling
+
+The modelling process follows [econometrics academy website](https://sites.google.com/site/econometricsacademy/econometrics-models/quantile-regression)
+
+We perform quantile regression by using `library(quantreg)` and function of `rq()`. Now, we create the quantile regression model with tau at 0.25, and 0.75. We only use the predictor variables that have a significant correlation with target variable.
+
+```{r warning=FALSE}
+# Create quantile regression model with tau=0.25 and assign as `model_reg_0.25`
+library(quantreg)
+model_reg_0.25 <- rq(Heating.Load~Height+Roof.Area+Wall.Area+Compactness, data=energy, tau=0.25)
+
+# Observe summary of the model
+summary(model_reg_0.25)
+```
+
+```{r warning=FALSE}
+# Create quantile regression model with tau=0.75 and assign as `model_reg_0.75`
+model_reg_0.75 <- rq(Heating.Load~Height+Roof.Area+Wall.Area+Compactness, data=energy, tau=0.75)
+
+# Observe summary of the model
+summary(model_reg_0.75)
+```
+
+The summary of quantile regression model with tau at 0.25 and 0.75, and linear regression model (model_ad_backward). 
+
+```{r warning=FALSE, echo=FALSE}
+
+Model.Quantile.0.25 <- round(summary(model_reg_0.25)$coefficients[1:5],4)
+
+Model.Quantile.0.75 <- round(summary(model_reg_0.75)$coefficients[1:5],4)
+
+Model.Linear <- round(summary(model_energy_backward)$coefficients[1:5],4)
+
+Name <- c("intercept", "Height",  "Roof.Area", "Wall.Area", "Compactness")
+
+summary5 <- as.data.frame(cbind(Name, Model.Linear, Model.Quantile.0.25, Model.Quantile.0.75))
+
+rmarkdown::paged_table(summary5)
+```
+
+Interpretation: 
+
+- At quantile 0.25, one unit increase in height will increase the heating load by 2.73. While at quantile 0.75, one unit increase in height increases the heating load by 5.41.  In another word, the effect of Height increases for a higher heating load (higher quantile).
+- At quantile 0.25, one unit increase in roof area will reduce the heating load by 0.26. While at quantile 0.75, one unit increase in roof area reduce the heating load by 0.13. In another word, the effect of roof area increases for a higher heating load (higher quantile).
+- At quantile 0.25, one unit increase in wall area will reduce the heating load by 0.058. While at quantile 0.75, one unit increase in wall area reduce the heating load by 0.014. In another word, the effect of wall area increase for a higher heating load (higher quantile).
+- At quantile 0.25, one unit increase in compactness will reduce the heating load by 85.32. While at quantile 0.75, one unit increase in compactness reduce the heating load by 53.75. In another word, the effect of wall area increase for a higher heating load (higher quantile).
+
+
+## Assumption
+
+In this assumption, we would like to check if the models with different tau obtain different coefficients. The expectation is to have a p-value less than alpha (p-value < 0.05) so that we will reject the $H_0$. We will use `anova()` to check the p-value of all variable predictors. The hypothesis test: 
+
+$$
+H_0: There\ is\ not\ different\\
+H_1: There\ is\  different\
+$$
+
+```{r warning=FALSE}
+
+anova(model_reg_0.25, model_reg_0.75)
+```
+> Insight: p-value shows a signifant value, implying that the slope or coefficient is different in two models. 
+
+## Summary 
+
+Let's create the plot to observe the different effects along the distribution of the target variables. 
+
+```{r warning=FALSE}
+# Create a quantile regression model. 
+model_reg <- rq(Heating.Load~Height+Roof.Area+Wall.Area+Compactness, data=energy, tau=seq(0.1, 0.9, by=0.1))
+
+# Plot the model 
+plot(summary(model_reg))
+```
+
+- The black line shows the estimated quantile regression coefficient, plotted as a line varying across the quantiles with their confidence intervals(the light grey area).
+- The red line is the estimated ordinary least squares (OLS) coefficient with its confidence interval.
+- If the quantile regression coefficient is outside the OLS confidence interval, then there is a significant difference between OLS and quantile coefficient. 
+- The quantile coefficients for height are slightly different from the OLS coefficients, especially in a lower quantile (0.1 and 0.5) and a higher quantile (0.7 and 0.9). 
+- For the roof area, the differences are only valid in the higher quantile (0.8 and 0.9).
+- In other plots (intercept, wall area and compactness), it appears the linear regression coefficient is sufficient to describe the relationship between these variables and the target. The quantile coefficient estimates are not statistically different from the OLS estimate.
+
+# Conclusion
+
+- Linear regression method has been performed to predict the heating load of the building.
+- Height, wall area, surface area, compactness, glazing area, and glazing distribution have a significant influence on the target variable. 
+- The prediction of the heating load by using the linear regression method shows that the model with the stepwise method is a better model than the lm() model due to having the highest value of an adjusted R-squared and the lowest value of error (RMSE). 
+- Linear regression method is not the most appropriate method for this dataset because the model violates three assumptions (multicolinearity, normality of residuals and homoscedasticity). 
+- The transformation on target and predictor has been done. However, it does not change the violation of the linear regression assumption. 
+- We had a total of 4 regression models : linear regression, ridge regression, decision tree and random forest. Random forest is the most appropriate model  for predicting heating load with a RMSE of 0.547.
+- The quantile regression model is used to find the relationship between target and predictors that changes depending on which quantile we look at. 
+- Only quantile coefficients for height and roof area have differences from the estimated OLS coefficients. While for the other variables, the linear regression coefficient is sufficient to describe the relationship between target and predictor. 
+
+# References 
+
+- [Decision tree](https://en.wikipedia.org/wiki/Decision_tree_learning)
+- [Econometrics Academy](https://sites.google.com/site/econometricsacademy/econometrics-models/quantile-regression)
+- [Ridge regression](https://en.wikipedia.org/wiki/Ridge_regression#:~:text=Ridge%20regression%20is%20a%20method,econometrics%2C%20chemistry%2C%20and%20engineering.)
+- [Random Forest](https://towardsdatascience.com/understanding-random-forest-58381e0602d2) 
+- [The Kaggle Website](https://archive.ics.uci.edu/ml/datasets/energy+efficiency)
+- [Quantile Regression Analysis](https://isdsnet.com/ijds-v4n5-1.pdf)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
